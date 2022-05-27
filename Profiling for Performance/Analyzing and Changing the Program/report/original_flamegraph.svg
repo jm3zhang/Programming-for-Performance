@@ -1,0 +1,1809 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="6000" height="582" onload="init(evt)" viewBox="0 0 6000 582" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="6000.0" height="582.0" fill="url(#background)"  />
+<text id="title" x="3000.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="565" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="5890.00" y="24" >Search</text>
+<text id="matched" x="5890.00" y="565" > </text>
+<g id="frames">
+<g >
+<title>[[kernel.kallsyms]] (973 samples, 11.83%)</title><rect x="3165.1" y="309" width="707.5" height="15.0" fill="rgb(209,189,34)" rx="2" ry="2" />
+<text  x="3168.06" y="319.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (48 samples, 0.58%)</title><rect x="4017.3" y="293" width="34.9" height="15.0" fill="rgb(228,128,1)" rx="2" ry="2" />
+<text  x="4020.27" y="303.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="3874.7" y="373" width="10.2" height="15.0" fill="rgb(224,225,1)" rx="2" ry="2" />
+<text  x="3877.75" y="383.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (52 samples, 0.63%)</title><rect x="2246.7" y="261" width="37.8" height="15.0" fill="rgb(251,72,33)" rx="2" ry="2" />
+<text  x="2249.68" y="271.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (16 samples, 0.19%)</title><rect x="2764.4" y="213" width="11.6" height="15.0" fill="rgb(249,86,1)" rx="2" ry="2" />
+<text  x="2767.41" y="223.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (344 samples, 4.18%)</title><rect x="4270.3" y="277" width="250.1" height="15.0" fill="rgb(253,33,42)" rx="2" ry="2" />
+<text  x="4273.31" y="287.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>__cxxabiv1::__vmi_class_type_info::__do_dyncast (25 samples, 0.30%)</title><rect x="4760.4" y="501" width="18.2" height="15.0" fill="rgb(221,170,7)" rx="2" ry="2" />
+<text  x="4763.41" y="511.5" ></text>
+</g>
+<g >
+<title>__lll_lock_wait (115 samples, 1.40%)</title><rect x="2669.9" y="261" width="83.6" height="15.0" fill="rgb(206,15,32)" rx="2" ry="2" />
+<text  x="2672.88" y="271.5" >__lll_loc..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (15 samples, 0.18%)</title><rect x="2284.5" y="277" width="10.9" height="15.0" fill="rgb(217,133,17)" rx="2" ry="2" />
+<text  x="2287.49" y="287.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (69 samples, 0.84%)</title><rect x="4078.3" y="293" width="50.2" height="15.0" fill="rgb(210,194,19)" rx="2" ry="2" />
+<text  x="4081.35" y="303.5" >[[ker..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::lock (26 samples, 0.32%)</title><rect x="2375.4" y="341" width="18.9" height="15.0" fill="rgb(249,79,12)" rx="2" ry="2" />
+<text  x="2378.39" y="351.5" ></text>
+</g>
+<g >
+<title>__lll_lock_wait (105 samples, 1.28%)</title><rect x="4052.2" y="485" width="76.3" height="15.0" fill="rgb(221,25,46)" rx="2" ry="2" />
+<text  x="4055.17" y="495.5" >__lll_lo..</text>
+</g>
+<g >
+<title>__lll_unlock_wake (44 samples, 0.54%)</title><rect x="2635.0" y="261" width="32.0" height="15.0" fill="rgb(206,146,5)" rx="2" ry="2" />
+<text  x="2637.98" y="271.5" >__..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (15 samples, 0.18%)</title><rect x="2284.5" y="213" width="10.9" height="15.0" fill="rgb(217,12,44)" rx="2" ry="2" />
+<text  x="2287.49" y="223.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (25 samples, 0.30%)</title><rect x="2375.4" y="261" width="18.2" height="15.0" fill="rgb(228,156,48)" rx="2" ry="2" />
+<text  x="2378.39" y="271.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (22 samples, 0.27%)</title><rect x="4133.6" y="437" width="16.0" height="15.0" fill="rgb(220,200,33)" rx="2" ry="2" />
+<text  x="4136.61" y="447.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (760 samples, 9.24%)</title><rect x="3319.9" y="117" width="552.7" height="15.0" fill="rgb(253,130,11)" rx="2" ry="2" />
+<text  x="3322.94" y="127.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (19 samples, 0.23%)</title><rect x="4851.3" y="341" width="13.8" height="15.0" fill="rgb(247,203,26)" rx="2" ry="2" />
+<text  x="4854.30" y="351.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (22 samples, 0.27%)</title><rect x="2760.0" y="261" width="16.0" height="15.0" fill="rgb(227,99,5)" rx="2" ry="2" />
+<text  x="2763.04" y="271.5" ></text>
+</g>
+<g >
+<title>[unknown] (266 samples, 3.23%)</title><rect x="2907.7" y="485" width="193.4" height="15.0" fill="rgb(231,54,37)" rx="2" ry="2" />
+<text  x="2910.65" y="495.5" >[unknown]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (15 samples, 0.18%)</title><rect x="2787.7" y="197" width="10.9" height="15.0" fill="rgb(219,156,41)" rx="2" ry="2" />
+<text  x="2790.68" y="207.5" ></text>
+</g>
+<g >
+<title>__memchr_avx2 (60 samples, 0.73%)</title><rect x="4865.1" y="501" width="43.6" height="15.0" fill="rgb(244,218,21)" rx="2" ry="2" />
+<text  x="4868.11" y="511.5" >__me..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (25 samples, 0.30%)</title><rect x="2375.4" y="213" width="18.2" height="15.0" fill="rgb(240,143,40)" rx="2" ry="2" />
+<text  x="2378.39" y="223.5" ></text>
+</g>
+<g >
+<title>__cxxabiv1::__si_class_type_info::__do_dyncast (20 samples, 0.24%)</title><rect x="4745.9" y="501" width="14.5" height="15.0" fill="rgb(210,93,9)" rx="2" ry="2" />
+<text  x="4748.86" y="511.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::lock (27 samples, 0.33%)</title><rect x="2757.9" y="309" width="19.6" height="15.0" fill="rgb(238,199,45)" rx="2" ry="2" />
+<text  x="2760.86" y="319.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (394 samples, 4.79%)</title><rect x="4234.0" y="421" width="286.4" height="15.0" fill="rgb(228,85,37)" rx="2" ry="2" />
+<text  x="4236.96" y="431.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>std::locale::locale (164 samples, 1.99%)</title><rect x="191.8" y="469" width="119.2" height="15.0" fill="rgb(238,129,47)" rx="2" ry="2" />
+<text  x="194.79" y="479.5" >std::locale::l..</text>
+</g>
+<g >
+<title>__gthread_recursive_mutex_lock (23 samples, 0.28%)</title><rect x="2801.5" y="309" width="16.7" height="15.0" fill="rgb(210,78,47)" rx="2" ry="2" />
+<text  x="2804.49" y="319.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (100 samples, 1.22%)</title><rect x="2680.8" y="197" width="72.7" height="15.0" fill="rgb(207,198,6)" rx="2" ry="2" />
+<text  x="2683.79" y="207.5" >[[kernel..</text>
+</g>
+<g >
+<title>main (50 samples, 0.61%)</title><rect x="4015.8" y="469" width="36.4" height="15.0" fill="rgb(221,98,40)" rx="2" ry="2" />
+<text  x="4018.81" y="479.5" >main</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (88 samples, 1.07%)</title><rect x="2689.5" y="69" width="64.0" height="15.0" fill="rgb(213,178,16)" rx="2" ry="2" />
+<text  x="2692.51" y="79.5" >[[kerne..</text>
+</g>
+<g >
+<title>virtual thunk to std::__cxx11::basic_stringstream&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::~basic_stringstream (161 samples, 1.96%)</title><rect x="4616.4" y="485" width="117.1" height="15.0" fill="rgb(214,226,48)" rx="2" ry="2" />
+<text  x="4619.43" y="495.5" >virtual thunk ..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (41 samples, 0.50%)</title><rect x="2637.2" y="245" width="29.8" height="15.0" fill="rgb(233,182,44)" rx="2" ry="2" />
+<text  x="2640.16" y="255.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (75 samples, 0.91%)</title><rect x="3961.3" y="421" width="54.5" height="15.0" fill="rgb(216,85,18)" rx="2" ry="2" />
+<text  x="3964.28" y="431.5" >[[ker..</text>
+</g>
+<g >
+<title>__gthread_recursive_mutex_lock (26 samples, 0.32%)</title><rect x="2375.4" y="309" width="18.9" height="15.0" fill="rgb(233,19,47)" rx="2" ry="2" />
+<text  x="2378.39" y="319.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (15 samples, 0.18%)</title><rect x="2284.5" y="293" width="10.9" height="15.0" fill="rgb(210,160,30)" rx="2" ry="2" />
+<text  x="2287.49" y="303.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (21 samples, 0.26%)</title><rect x="2802.9" y="229" width="15.3" height="15.0" fill="rgb(233,46,32)" rx="2" ry="2" />
+<text  x="2805.95" y="239.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (81 samples, 0.98%)</title><rect x="4069.6" y="341" width="58.9" height="15.0" fill="rgb(209,38,45)" rx="2" ry="2" />
+<text  x="4072.62" y="351.5" >[[kern..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (773 samples, 9.40%)</title><rect x="3310.5" y="149" width="562.1" height="15.0" fill="rgb(253,23,43)" rx="2" ry="2" />
+<text  x="3313.49" y="159.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="3874.7" y="405" width="10.2" height="15.0" fill="rgb(245,110,30)" rx="2" ry="2" />
+<text  x="3877.75" y="415.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (19 samples, 0.23%)</title><rect x="2804.4" y="85" width="13.8" height="15.0" fill="rgb(232,146,8)" rx="2" ry="2" />
+<text  x="2807.40" y="95.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (15 samples, 0.18%)</title><rect x="2284.5" y="245" width="10.9" height="15.0" fill="rgb(236,169,53)" rx="2" ry="2" />
+<text  x="2287.49" y="255.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5219.2" y="405" width="10.2" height="15.0" fill="rgb(234,139,19)" rx="2" ry="2" />
+<text  x="5222.23" y="415.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (765 samples, 9.30%)</title><rect x="3316.3" y="133" width="556.3" height="15.0" fill="rgb(247,13,8)" rx="2" ry="2" />
+<text  x="3319.31" y="143.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (43 samples, 0.52%)</title><rect x="5432.3" y="405" width="31.3" height="15.0" fill="rgb(212,133,24)" rx="2" ry="2" />
+<text  x="5435.28" y="415.5" >[[..</text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.25] (3,939 samples, 47.90%)</title><rect x="37.6" y="501" width="2864.2" height="15.0" fill="rgb(252,208,50)" rx="2" ry="2" />
+<text  x="40.63" y="511.5" >[libstdc++.so.6.0.25]</text>
+</g>
+<g >
+<title>__lll_lock_wait (58 samples, 0.71%)</title><rect x="2242.3" y="309" width="42.2" height="15.0" fill="rgb(216,18,51)" rx="2" ry="2" />
+<text  x="2245.32" y="319.5" >__l..</text>
+</g>
+<g >
+<title>pthread_cond_wait@@GLIBC_2.3.2 (423 samples, 5.14%)</title><rect x="4212.9" y="485" width="307.5" height="15.0" fill="rgb(238,84,34)" rx="2" ry="2" />
+<text  x="4215.87" y="495.5" >pthread_cond_wait@@GLIBC_2.3.2</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (113 samples, 1.37%)</title><rect x="2671.3" y="245" width="82.2" height="15.0" fill="rgb(228,206,37)" rx="2" ry="2" />
+<text  x="2674.33" y="255.5" >[[kernel...</text>
+</g>
+<g >
+<title>Student::buildIdea (95 samples, 1.16%)</title><rect x="2829.8" y="373" width="69.1" height="15.0" fill="rgb(254,195,48)" rx="2" ry="2" />
+<text  x="2832.85" y="383.5" >Student..</text>
+</g>
+<g >
+<title>__GI___libc_write (17 samples, 0.21%)</title><rect x="3872.6" y="485" width="12.3" height="15.0" fill="rgb(243,159,18)" rx="2" ry="2" />
+<text  x="3875.57" y="495.5" ></text>
+</g>
+<g >
+<title>std::__invoke&lt;runHackathon (3,532 samples, 42.95%)</title><rect x="333.6" y="437" width="2568.2" height="15.0" fill="rgb(214,70,26)" rx="2" ry="2" />
+<text  x="336.58" y="447.5" >std::__invoke&lt;runHackathon</text>
+</g>
+<g >
+<title>__dynamic_cast (72 samples, 0.88%)</title><rect x="4778.6" y="501" width="52.3" height="15.0" fill="rgb(231,9,48)" rx="2" ry="2" />
+<text  x="4781.58" y="511.5" >__dyn..</text>
+</g>
+<g >
+<title>runHackathon (50 samples, 0.61%)</title><rect x="4015.8" y="453" width="36.4" height="15.0" fill="rgb(214,174,9)" rx="2" ry="2" />
+<text  x="4018.81" y="463.5" >run..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (92 samples, 1.12%)</title><rect x="4061.6" y="405" width="66.9" height="15.0" fill="rgb(226,183,51)" rx="2" ry="2" />
+<text  x="4064.62" y="415.5" >[[kerne..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5410.5" y="405" width="10.1" height="15.0" fill="rgb(233,76,53)" rx="2" ry="2" />
+<text  x="5413.47" y="415.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (47 samples, 0.57%)</title><rect x="2250.3" y="149" width="34.2" height="15.0" fill="rgb(213,116,17)" rx="2" ry="2" />
+<text  x="2253.32" y="159.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (21 samples, 0.26%)</title><rect x="2802.9" y="165" width="15.3" height="15.0" fill="rgb(212,81,37)" rx="2" ry="2" />
+<text  x="2805.95" y="175.5" ></text>
+</g>
+<g >
+<title>EventQueue::dequeueEvent (290 samples, 3.53%)</title><rect x="2613.9" y="373" width="210.9" height="15.0" fill="rgb(214,71,17)" rx="2" ry="2" />
+<text  x="2616.89" y="383.5" >EventQueue::dequeueEvent</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (25 samples, 0.30%)</title><rect x="2375.4" y="149" width="18.2" height="15.0" fill="rgb(243,98,34)" rx="2" ry="2" />
+<text  x="2378.39" y="159.5" ></text>
+</g>
+<g >
+<title>[unknown] (31 samples, 0.38%)</title><rect x="311.0" y="485" width="22.6" height="15.0" fill="rgb(217,144,15)" rx="2" ry="2" />
+<text  x="314.04" y="495.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (25 samples, 0.30%)</title><rect x="2375.4" y="245" width="18.2" height="15.0" fill="rgb(224,104,4)" rx="2" ry="2" />
+<text  x="2378.39" y="255.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (17 samples, 0.21%)</title><rect x="3872.6" y="469" width="12.3" height="15.0" fill="rgb(251,34,52)" rx="2" ry="2" />
+<text  x="3875.57" y="479.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (25 samples, 0.30%)</title><rect x="2375.4" y="165" width="18.2" height="15.0" fill="rgb(232,129,7)" rx="2" ry="2" />
+<text  x="2378.39" y="175.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (358 samples, 4.35%)</title><rect x="4260.1" y="309" width="260.3" height="15.0" fill="rgb(213,143,42)" rx="2" ry="2" />
+<text  x="4263.13" y="319.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>std::__invoke_impl&lt;void, runHackathon (3,532 samples, 42.95%)</title><rect x="333.6" y="421" width="2568.2" height="15.0" fill="rgb(246,164,5)" rx="2" ry="2" />
+<text  x="336.58" y="431.5" >std::__invoke_impl&lt;void, runHackathon</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (849 samples, 10.32%)</title><rect x="3255.2" y="245" width="617.4" height="15.0" fill="rgb(225,144,28)" rx="2" ry="2" />
+<text  x="3258.23" y="255.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="1631.5" y="293" width="10.2" height="15.0" fill="rgb(231,86,29)" rx="2" ry="2" />
+<text  x="1634.52" y="303.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (48 samples, 0.58%)</title><rect x="4017.3" y="357" width="34.9" height="15.0" fill="rgb(232,170,26)" rx="2" ry="2" />
+<text  x="4020.27" y="367.5" >[[..</text>
+</g>
+<g >
+<title>cfree@GLIBC_2.2.5 (65 samples, 0.79%)</title><rect x="5275.9" y="501" width="47.3" height="15.0" fill="rgb(223,217,5)" rx="2" ry="2" />
+<text  x="5278.95" y="511.5" >cfre..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (32 samples, 0.39%)</title><rect x="2643.7" y="181" width="23.3" height="15.0" fill="rgb(245,179,39)" rx="2" ry="2" />
+<text  x="2646.70" y="191.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1,025 samples, 12.46%)</title><rect x="3127.2" y="373" width="745.4" height="15.0" fill="rgb(218,21,29)" rx="2" ry="2" />
+<text  x="3130.25" y="383.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (47 samples, 0.57%)</title><rect x="2250.3" y="133" width="34.2" height="15.0" fill="rgb(237,80,29)" rx="2" ry="2" />
+<text  x="2253.32" y="143.5" >[[..</text>
+</g>
+<g >
+<title>__madvise (46 samples, 0.56%)</title><rect x="4831.7" y="501" width="33.4" height="15.0" fill="rgb(246,31,32)" rx="2" ry="2" />
+<text  x="4834.67" y="511.5" >__..</text>
+</g>
+<g >
+<title>std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt;::~num_get (16 samples, 0.19%)</title><rect x="4593.2" y="485" width="11.6" height="15.0" fill="rgb(233,134,41)" rx="2" ry="2" />
+<text  x="4596.16" y="495.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (42 samples, 0.51%)</title><rect x="3985.3" y="341" width="30.5" height="15.0" fill="rgb(246,131,49)" rx="2" ry="2" />
+<text  x="3988.27" y="351.5" >[[..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::unique_lock (58 samples, 0.71%)</title><rect x="2242.3" y="357" width="42.2" height="15.0" fill="rgb(246,175,14)" rx="2" ry="2" />
+<text  x="2245.32" y="367.5" >std..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5219.2" y="373" width="10.2" height="15.0" fill="rgb(216,168,52)" rx="2" ry="2" />
+<text  x="5222.23" y="383.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (340 samples, 4.13%)</title><rect x="4273.2" y="261" width="247.2" height="15.0" fill="rgb(229,92,5)" rx="2" ry="2" />
+<text  x="4276.22" y="271.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>IdeaGenerator::getNextIdea[abi:cxx11] (2,599 samples, 31.60%)</title><rect x="337.2" y="373" width="1889.9" height="15.0" fill="rgb(214,135,54)" rx="2" ry="2" />
+<text  x="340.21" y="383.5" >IdeaGenerator::getNextIdea[abi:cxx11]</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::unlock (46 samples, 0.56%)</title><rect x="2633.5" y="309" width="33.5" height="15.0" fill="rgb(253,30,31)" rx="2" ry="2" />
+<text  x="2636.52" y="319.5" >st..</text>
+</g>
+<g >
+<title>std::basic_ios&lt;char, std::char_traits&lt;char&gt; &gt;::operator bool (31 samples, 0.38%)</title><rect x="2463.4" y="373" width="22.5" height="15.0" fill="rgb(218,164,8)" rx="2" ry="2" />
+<text  x="2466.37" y="383.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (16 samples, 0.19%)</title><rect x="2764.4" y="229" width="11.6" height="15.0" fill="rgb(250,32,19)" rx="2" ry="2" />
+<text  x="2767.41" y="239.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (67 samples, 0.81%)</title><rect x="3967.1" y="389" width="48.7" height="15.0" fill="rgb(235,108,9)" rx="2" ry="2" />
+<text  x="3970.10" y="399.5" >[[ke..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::~basic_string (302 samples, 3.67%)</title><rect x="1822.8" y="309" width="219.6" height="15.0" fill="rgb(249,141,39)" rx="2" ry="2" />
+<text  x="1825.76" y="319.5" >std::__cxx11::basic_string&lt;ch..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (92 samples, 1.12%)</title><rect x="4061.6" y="421" width="66.9" height="15.0" fill="rgb(253,19,54)" rx="2" ry="2" />
+<text  x="4064.62" y="431.5" >[[kerne..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::unique_lock (26 samples, 0.32%)</title><rect x="2375.4" y="357" width="18.9" height="15.0" fill="rgb(224,24,39)" rx="2" ry="2" />
+<text  x="2378.39" y="367.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (15 samples, 0.18%)</title><rect x="2787.7" y="229" width="10.9" height="15.0" fill="rgb(220,221,46)" rx="2" ry="2" />
+<text  x="2790.68" y="239.5" ></text>
+</g>
+<g >
+<title>std::has_facet&lt;std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt; (16 samples, 0.19%)</title><rect x="3032.7" y="469" width="11.7" height="15.0" fill="rgb(229,222,13)" rx="2" ry="2" />
+<text  x="3035.72" y="479.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (25 samples, 0.30%)</title><rect x="2375.4" y="277" width="18.2" height="15.0" fill="rgb(205,118,16)" rx="2" ry="2" />
+<text  x="2378.39" y="287.5" ></text>
+</g>
+<g >
+<title>__lll_unlock_wake (29 samples, 0.35%)</title><rect x="4128.5" y="485" width="21.1" height="15.0" fill="rgb(250,157,20)" rx="2" ry="2" />
+<text  x="4131.52" y="495.5" ></text>
+</g>
+<g >
+<title>[unknown] (161 samples, 1.96%)</title><rect x="4616.4" y="469" width="117.1" height="15.0" fill="rgb(220,123,21)" rx="2" ry="2" />
+<text  x="4619.43" y="479.5" >[unknown]</text>
+</g>
+<g >
+<title>std::istream::sentry::sentry (27 samples, 0.33%)</title><rect x="2579.7" y="373" width="19.6" height="15.0" fill="rgb(230,68,10)" rx="2" ry="2" />
+<text  x="2582.71" y="383.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::unlock (29 samples, 0.35%)</title><rect x="2778.9" y="309" width="21.1" height="15.0" fill="rgb(251,142,53)" rx="2" ry="2" />
+<text  x="2781.95" y="319.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (984 samples, 11.96%)</title><rect x="3157.1" y="325" width="715.5" height="15.0" fill="rgb(224,23,41)" rx="2" ry="2" />
+<text  x="3160.06" y="335.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5219.2" y="485" width="10.2" height="15.0" fill="rgb(253,195,41)" rx="2" ry="2" />
+<text  x="5222.23" y="495.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::~unique_lock (16 samples, 0.19%)</title><rect x="2284.5" y="357" width="11.6" height="15.0" fill="rgb(210,61,28)" rx="2" ry="2" />
+<text  x="2287.49" y="367.5" ></text>
+</g>
+<g >
+<title>__lll_unlock_wake (15 samples, 0.18%)</title><rect x="2284.5" y="309" width="10.9" height="15.0" fill="rgb(221,199,14)" rx="2" ry="2" />
+<text  x="2287.49" y="319.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (50 samples, 0.61%)</title><rect x="2248.1" y="197" width="36.4" height="15.0" fill="rgb(245,126,35)" rx="2" ry="2" />
+<text  x="2251.14" y="207.5" >[[k..</text>
+</g>
+<g >
+<title>__lll_lock_wait (25 samples, 0.30%)</title><rect x="2375.4" y="293" width="18.2" height="15.0" fill="rgb(210,60,6)" rx="2" ry="2" />
+<text  x="2378.39" y="303.5" ></text>
+</g>
+<g >
+<title>__close_nocancel (36 samples, 0.44%)</title><rect x="3884.9" y="485" width="26.2" height="15.0" fill="rgb(232,111,39)" rx="2" ry="2" />
+<text  x="3887.93" y="495.5" >_..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20 samples, 0.24%)</title><rect x="2803.7" y="133" width="14.5" height="15.0" fill="rgb(215,163,46)" rx="2" ry="2" />
+<text  x="2806.67" y="143.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1,042 samples, 12.67%)</title><rect x="3114.9" y="405" width="757.7" height="15.0" fill="rgb(229,54,20)" rx="2" ry="2" />
+<text  x="3117.89" y="415.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>StrPair::StrPair (54 samples, 0.66%)</title><rect x="2090.3" y="325" width="39.3" height="15.0" fill="rgb(252,156,53)" rx="2" ry="2" />
+<text  x="2093.35" y="335.5" >Str..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_assign (502 samples, 6.10%)</title><rect x="5505.0" y="501" width="365.0" height="15.0" fill="rgb(233,22,45)" rx="2" ry="2" />
+<text  x="5508.00" y="511.5" >std::__cxx11::basic_string&lt;char, std::char_traits..</text>
+</g>
+<g >
+<title>sha256 (14 samples, 0.17%)</title><rect x="2437.9" y="373" width="10.2" height="15.0" fill="rgb(212,44,38)" rx="2" ry="2" />
+<text  x="2440.92" y="383.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20 samples, 0.24%)</title><rect x="2652.4" y="133" width="14.6" height="15.0" fill="rgb(247,36,17)" rx="2" ry="2" />
+<text  x="2655.43" y="143.5" ></text>
+</g>
+<g >
+<title>xorChecksum (64 samples, 0.78%)</title><rect x="2851.7" y="341" width="46.5" height="15.0" fill="rgb(215,122,2)" rx="2" ry="2" />
+<text  x="2854.66" y="351.5" >xorC..</text>
+</g>
+<g >
+<title>std::recursive_mutex::unlock (44 samples, 0.54%)</title><rect x="2635.0" y="293" width="32.0" height="15.0" fill="rgb(251,87,53)" rx="2" ry="2" />
+<text  x="2637.98" y="303.5" >st..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (36 samples, 0.44%)</title><rect x="5437.4" y="373" width="26.2" height="15.0" fill="rgb(244,109,48)" rx="2" ry="2" />
+<text  x="5440.37" y="383.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5410.5" y="453" width="10.1" height="15.0" fill="rgb(232,125,44)" rx="2" ry="2" />
+<text  x="5413.47" y="463.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (32 samples, 0.39%)</title><rect x="5440.3" y="357" width="23.3" height="15.0" fill="rgb(244,80,54)" rx="2" ry="2" />
+<text  x="5443.28" y="367.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (28 samples, 0.34%)</title><rect x="4844.8" y="373" width="20.3" height="15.0" fill="rgb(236,149,9)" rx="2" ry="2" />
+<text  x="4847.75" y="383.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (26 samples, 0.32%)</title><rect x="3892.2" y="405" width="18.9" height="15.0" fill="rgb(215,70,32)" rx="2" ry="2" />
+<text  x="3895.20" y="415.5" ></text>
+</g>
+<g >
+<title>IdeaGenerator::run (2,602 samples, 31.64%)</title><rect x="335.0" y="389" width="1892.1" height="15.0" fill="rgb(221,144,39)" rx="2" ry="2" />
+<text  x="338.03" y="399.5" >IdeaGenerator::run</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (353 samples, 4.29%)</title><rect x="4263.8" y="293" width="256.6" height="15.0" fill="rgb(222,146,24)" rx="2" ry="2" />
+<text  x="4266.77" y="303.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (427 samples, 5.19%)</title><rect x="4908.7" y="501" width="310.5" height="15.0" fill="rgb(240,97,40)" rx="2" ry="2" />
+<text  x="4911.74" y="511.5" >__memmove_avx_unaligned_erms</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (104 samples, 1.26%)</title><rect x="4052.9" y="469" width="75.6" height="15.0" fill="rgb(206,124,22)" rx="2" ry="2" />
+<text  x="4055.90" y="479.5" >[[kernel..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::operator= (132 samples, 1.61%)</title><rect x="1683.1" y="309" width="96.0" height="15.0" fill="rgb(237,170,17)" rx="2" ry="2" />
+<text  x="1686.15" y="319.5" >std::__cxx1..</text>
+</g>
+<g >
+<title>StrPair::StrPair (123 samples, 1.50%)</title><rect x="756.0" y="309" width="89.5" height="15.0" fill="rgb(212,14,49)" rx="2" ry="2" />
+<text  x="759.05" y="319.5" >StrPair::S..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (43 samples, 0.52%)</title><rect x="4833.8" y="437" width="31.3" height="15.0" fill="rgb(222,22,42)" rx="2" ry="2" />
+<text  x="4836.85" y="447.5" >[[..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::~basic_string@plt (66 samples, 0.80%)</title><rect x="2042.4" y="309" width="47.9" height="15.0" fill="rgb(254,133,40)" rx="2" ry="2" />
+<text  x="2045.36" y="319.5" >std:..</text>
+</g>
+<g >
+<title>std::_V2::condition_variable_any::wait&lt;std::unique_lock&lt;std::recursive_mutex&gt;, EventQueue::dequeueEvent (238 samples, 2.89%)</title><rect x="2627.7" y="357" width="173.1" height="15.0" fill="rgb(230,60,12)" rx="2" ry="2" />
+<text  x="2630.70" y="367.5" >std::_V2::condition_va..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (16 samples, 0.19%)</title><rect x="2764.4" y="133" width="11.6" height="15.0" fill="rgb(225,105,7)" rx="2" ry="2" />
+<text  x="2767.41" y="143.5" ></text>
+</g>
+<g >
+<title>std::recursive_mutex::lock (118 samples, 1.43%)</title><rect x="2669.2" y="293" width="85.8" height="15.0" fill="rgb(228,200,45)" rx="2" ry="2" />
+<text  x="2672.15" y="303.5" >std::recur..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="3874.7" y="437" width="10.2" height="15.0" fill="rgb(233,23,23)" rx="2" ry="2" />
+<text  x="3877.75" y="447.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (824 samples, 10.02%)</title><rect x="3273.4" y="229" width="599.2" height="15.0" fill="rgb(230,122,4)" rx="2" ry="2" />
+<text  x="3276.40" y="239.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (15 samples, 0.18%)</title><rect x="2765.1" y="117" width="10.9" height="15.0" fill="rgb(211,154,38)" rx="2" ry="2" />
+<text  x="2768.13" y="127.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (384 samples, 4.67%)</title><rect x="4241.2" y="357" width="279.2" height="15.0" fill="rgb(225,133,24)" rx="2" ry="2" />
+<text  x="4244.23" y="367.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="3874.7" y="421" width="10.2" height="15.0" fill="rgb(244,3,2)" rx="2" ry="2" />
+<text  x="3877.75" y="431.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (21 samples, 0.26%)</title><rect x="2760.8" y="245" width="15.2" height="15.0" fill="rgb(229,130,52)" rx="2" ry="2" />
+<text  x="2763.77" y="255.5" ></text>
+</g>
+<g >
+<title>PackageDownloader::run (525 samples, 6.38%)</title><rect x="2227.1" y="389" width="381.7" height="15.0" fill="rgb(220,49,12)" rx="2" ry="2" />
+<text  x="2230.05" y="399.5" >PackageDownloader::run</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (21 samples, 0.26%)</title><rect x="2802.9" y="245" width="15.3" height="15.0" fill="rgb(212,50,2)" rx="2" ry="2" />
+<text  x="2805.95" y="255.5" ></text>
+</g>
+<g >
+<title>[unknown] (2,526 samples, 30.71%)</title><rect x="2901.8" y="501" width="1836.8" height="15.0" fill="rgb(228,99,13)" rx="2" ry="2" />
+<text  x="2904.84" y="511.5" >[unknown]</text>
+</g>
+<g >
+<title>__dynamic_cast (27 samples, 0.33%)</title><rect x="4621.5" y="453" width="19.7" height="15.0" fill="rgb(214,41,37)" rx="2" ry="2" />
+<text  x="4624.52" y="463.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (43 samples, 0.52%)</title><rect x="5432.3" y="453" width="31.3" height="15.0" fill="rgb(221,43,29)" rx="2" ry="2" />
+<text  x="5435.28" y="463.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (392 samples, 4.77%)</title><rect x="4235.4" y="405" width="285.0" height="15.0" fill="rgb(236,192,0)" rx="2" ry="2" />
+<text  x="4238.41" y="415.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>std::basic_ios&lt;char, std::char_traits&lt;char&gt; &gt;::_M_cache_locale (20 samples, 0.24%)</title><rect x="2983.3" y="469" width="14.5" height="15.0" fill="rgb(209,208,54)" rx="2" ry="2" />
+<text  x="2986.28" y="479.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="2765.9" y="101" width="10.1" height="15.0" fill="rgb(211,217,40)" rx="2" ry="2" />
+<text  x="2768.86" y="111.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (58 samples, 0.71%)</title><rect x="2242.3" y="293" width="42.2" height="15.0" fill="rgb(234,220,34)" rx="2" ry="2" />
+<text  x="2245.32" y="303.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20 samples, 0.24%)</title><rect x="3896.6" y="389" width="14.5" height="15.0" fill="rgb(240,80,15)" rx="2" ry="2" />
+<text  x="3899.56" y="399.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (394 samples, 4.79%)</title><rect x="4234.0" y="437" width="286.4" height="15.0" fill="rgb(231,131,2)" rx="2" ry="2" />
+<text  x="4236.96" y="447.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>__libc_read (106 samples, 1.29%)</title><rect x="3938.7" y="485" width="77.1" height="15.0" fill="rgb(233,146,38)" rx="2" ry="2" />
+<text  x="3941.74" y="495.5" >__libc_r..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (19 samples, 0.23%)</title><rect x="2804.4" y="101" width="13.8" height="15.0" fill="rgb(248,145,15)" rx="2" ry="2" />
+<text  x="2807.40" y="111.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5219.2" y="357" width="10.2" height="15.0" fill="rgb(217,205,28)" rx="2" ry="2" />
+<text  x="5222.23" y="367.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (97 samples, 1.18%)</title><rect x="2683.0" y="149" width="70.5" height="15.0" fill="rgb(221,161,1)" rx="2" ry="2" />
+<text  x="2685.97" y="159.5" >[[kerne..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (33 samples, 0.40%)</title><rect x="2643.0" y="197" width="24.0" height="15.0" fill="rgb(239,82,35)" rx="2" ry="2" />
+<text  x="2645.97" y="207.5" >[..</text>
+</g>
+<g >
+<title>std::_V2::condition_variable_any::_Unlock&lt;std::unique_lock&lt;std::recursive_mutex&gt; &gt;::_Unlock (46 samples, 0.56%)</title><rect x="2633.5" y="325" width="33.5" height="15.0" fill="rgb(234,132,28)" rx="2" ry="2" />
+<text  x="2636.52" y="335.5" >st..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5410.5" y="437" width="10.1" height="15.0" fill="rgb(220,118,1)" rx="2" ry="2" />
+<text  x="5413.47" y="447.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (367 samples, 4.46%)</title><rect x="4253.6" y="325" width="266.8" height="15.0" fill="rgb(224,153,41)" rx="2" ry="2" />
+<text  x="4256.59" y="335.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20 samples, 0.24%)</title><rect x="4135.1" y="373" width="14.5" height="15.0" fill="rgb(207,29,21)" rx="2" ry="2" />
+<text  x="4138.07" y="383.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_assign (309 samples, 3.76%)</title><rect x="1151.6" y="309" width="224.7" height="15.0" fill="rgb(231,63,46)" rx="2" ry="2" />
+<text  x="1154.61" y="319.5" >std::__cxx11::basic_string&lt;ch..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (17 samples, 0.21%)</title><rect x="2654.6" y="117" width="12.4" height="15.0" fill="rgb(253,143,36)" rx="2" ry="2" />
+<text  x="2657.61" y="127.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (34 samples, 0.41%)</title><rect x="2642.2" y="213" width="24.8" height="15.0" fill="rgb(208,100,45)" rx="2" ry="2" />
+<text  x="2645.25" y="223.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (50 samples, 0.61%)</title><rect x="2248.1" y="181" width="36.4" height="15.0" fill="rgb(227,184,11)" rx="2" ry="2" />
+<text  x="2251.14" y="191.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (380 samples, 4.62%)</title><rect x="4244.1" y="341" width="276.3" height="15.0" fill="rgb(208,122,51)" rx="2" ry="2" />
+<text  x="4247.14" y="351.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (22 samples, 0.27%)</title><rect x="4133.6" y="421" width="16.0" height="15.0" fill="rgb(214,172,32)" rx="2" ry="2" />
+<text  x="4136.61" y="431.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (87 samples, 1.06%)</title><rect x="2690.2" y="53" width="63.3" height="15.0" fill="rgb(239,71,31)" rx="2" ry="2" />
+<text  x="2693.24" y="63.5" >[[kern..</text>
+</g>
+<g >
+<title>[unknown] (17 samples, 0.21%)</title><rect x="4522.6" y="469" width="12.4" height="15.0" fill="rgb(238,183,11)" rx="2" ry="2" />
+<text  x="4525.63" y="479.5" ></text>
+</g>
+<g >
+<title>all (8,224 samples, 100%)</title><rect x="10.0" y="533" width="5980.0" height="15.0" fill="rgb(248,153,52)" rx="2" ry="2" />
+<text  x="13.00" y="543.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1,035 samples, 12.59%)</title><rect x="3120.0" y="389" width="752.6" height="15.0" fill="rgb(247,46,40)" rx="2" ry="2" />
+<text  x="3122.98" y="399.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (100 samples, 1.22%)</title><rect x="2680.8" y="165" width="72.7" height="15.0" fill="rgb(228,56,39)" rx="2" ry="2" />
+<text  x="2683.79" y="175.5" >[[kernel..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (43 samples, 0.52%)</title><rect x="4833.8" y="405" width="31.3" height="15.0" fill="rgb(208,94,52)" rx="2" ry="2" />
+<text  x="4836.85" y="415.5" >[[..</text>
+</g>
+<g >
+<title>std::ostream::_M_insert&lt;long&gt; (18 samples, 0.22%)</title><rect x="4690.6" y="453" width="13.1" height="15.0" fill="rgb(224,213,31)" rx="2" ry="2" />
+<text  x="4693.60" y="463.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5219.2" y="389" width="10.2" height="15.0" fill="rgb(237,213,51)" rx="2" ry="2" />
+<text  x="5222.23" y="399.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (407 samples, 4.95%)</title><rect x="4224.5" y="453" width="295.9" height="15.0" fill="rgb(221,5,4)" rx="2" ry="2" />
+<text  x="4227.50" y="463.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1,048 samples, 12.74%)</title><rect x="3110.5" y="453" width="762.1" height="15.0" fill="rgb(244,141,46)" rx="2" ry="2" />
+<text  x="3113.53" y="463.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (28 samples, 0.34%)</title><rect x="3890.7" y="437" width="20.4" height="15.0" fill="rgb(214,82,41)" rx="2" ry="2" />
+<text  x="3893.75" y="447.5" ></text>
+</g>
+<g >
+<title>__lll_lock_wait (23 samples, 0.28%)</title><rect x="2759.3" y="277" width="16.7" height="15.0" fill="rgb(244,53,35)" rx="2" ry="2" />
+<text  x="2762.32" y="287.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::basic_string (304 samples, 3.70%)</title><rect x="1420.7" y="309" width="221.0" height="15.0" fill="rgb(221,84,53)" rx="2" ry="2" />
+<text  x="1423.65" y="319.5" >std::__cxx11::basic_string&lt;ch..</text>
+</g>
+<g >
+<title>std::mutex::lock (25 samples, 0.30%)</title><rect x="2759.3" y="293" width="18.2" height="15.0" fill="rgb(214,111,23)" rx="2" ry="2" />
+<text  x="2762.32" y="303.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (51 samples, 0.62%)</title><rect x="2247.4" y="229" width="37.1" height="15.0" fill="rgb(206,107,47)" rx="2" ry="2" />
+<text  x="2250.41" y="239.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5410.5" y="389" width="10.1" height="15.0" fill="rgb(229,130,35)" rx="2" ry="2" />
+<text  x="5413.47" y="399.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20 samples, 0.24%)</title><rect x="4850.6" y="357" width="14.5" height="15.0" fill="rgb(238,33,23)" rx="2" ry="2" />
+<text  x="4853.57" y="367.5" ></text>
+</g>
+<g >
+<title>std::getline&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; (71 samples, 0.86%)</title><rect x="4540.1" y="485" width="51.6" height="15.0" fill="rgb(238,63,4)" rx="2" ry="2" />
+<text  x="4543.08" y="495.5" >std::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="3900.9" y="373" width="10.2" height="15.0" fill="rgb(225,45,10)" rx="2" ry="2" />
+<text  x="3903.93" y="383.5" ></text>
+</g>
+<g >
+<title>ChecksumTracker&lt;PackageDownloader,  (187 samples, 2.27%)</title><rect x="2227.8" y="373" width="136.0" height="15.0" fill="rgb(214,61,7)" rx="2" ry="2" />
+<text  x="2230.78" y="383.5" >ChecksumTracker&lt;P..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (47 samples, 0.57%)</title><rect x="2250.3" y="117" width="34.2" height="15.0" fill="rgb(244,115,8)" rx="2" ry="2" />
+<text  x="2253.32" y="127.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (787 samples, 9.57%)</title><rect x="3300.3" y="165" width="572.3" height="15.0" fill="rgb(217,172,28)" rx="2" ry="2" />
+<text  x="3303.31" y="175.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>Container&lt;StrPair&gt;::pushBack (2,408 samples, 29.28%)</title><rect x="339.4" y="325" width="1750.9" height="15.0" fill="rgb(219,14,11)" rx="2" ry="2" />
+<text  x="342.39" y="335.5" >Container&lt;StrPair&gt;::pushBack</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (21 samples, 0.26%)</title><rect x="2802.9" y="213" width="15.3" height="15.0" fill="rgb(231,143,46)" rx="2" ry="2" />
+<text  x="2805.95" y="223.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5219.2" y="453" width="10.2" height="15.0" fill="rgb(216,110,33)" rx="2" ry="2" />
+<text  x="5222.23" y="463.5" ></text>
+</g>
+<g >
+<title>std::has_facet&lt;std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt; (24 samples, 0.29%)</title><rect x="3014.5" y="469" width="17.5" height="15.0" fill="rgb(230,130,10)" rx="2" ry="2" />
+<text  x="3017.54" y="479.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_append (50 samples, 0.61%)</title><rect x="5466.5" y="501" width="36.3" height="15.0" fill="rgb(233,72,44)" rx="2" ry="2" />
+<text  x="5469.46" y="511.5" >std..</text>
+</g>
+<g >
+<title>StrPair::operator= (70 samples, 0.85%)</title><rect x="2129.6" y="325" width="50.9" height="15.0" fill="rgb(241,68,28)" rx="2" ry="2" />
+<text  x="2132.61" y="335.5" >StrPa..</text>
+</g>
+<g >
+<title>std::mutex::unlock (16 samples, 0.19%)</title><rect x="2284.5" y="325" width="11.6" height="15.0" fill="rgb(249,64,1)" rx="2" ry="2" />
+<text  x="2287.49" y="335.5" ></text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.25] (26 samples, 0.32%)</title><rect x="313.9" y="469" width="19.0" height="15.0" fill="rgb(236,114,6)" rx="2" ry="2" />
+<text  x="316.94" y="479.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (50 samples, 0.61%)</title><rect x="4015.8" y="485" width="36.4" height="15.0" fill="rgb(253,129,19)" rx="2" ry="2" />
+<text  x="4018.81" y="495.5" >__l..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (26 samples, 0.32%)</title><rect x="2648.1" y="149" width="18.9" height="15.0" fill="rgb(241,168,23)" rx="2" ry="2" />
+<text  x="2651.06" y="159.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (50 samples, 0.61%)</title><rect x="4015.8" y="389" width="36.4" height="15.0" fill="rgb(210,36,29)" rx="2" ry="2" />
+<text  x="4018.81" y="399.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (750 samples, 9.12%)</title><rect x="3327.2" y="101" width="545.4" height="15.0" fill="rgb(247,224,45)" rx="2" ry="2" />
+<text  x="3330.21" y="111.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (107 samples, 1.30%)</title><rect x="2675.7" y="229" width="77.8" height="15.0" fill="rgb(237,156,25)" rx="2" ry="2" />
+<text  x="2678.70" y="239.5" >[[kernel..</text>
+</g>
+<g >
+<title>StrPair::operator= (245 samples, 2.98%)</title><rect x="845.5" y="309" width="178.1" height="15.0" fill="rgb(237,81,20)" rx="2" ry="2" />
+<text  x="848.48" y="319.5" >StrPair::operator=</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::operator=@plt (60 samples, 0.73%)</title><rect x="1779.1" y="309" width="43.7" height="15.0" fill="rgb(217,98,18)" rx="2" ry="2" />
+<text  x="1782.13" y="319.5" >std:..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (41 samples, 0.50%)</title><rect x="5433.7" y="389" width="29.9" height="15.0" fill="rgb(224,40,31)" rx="2" ry="2" />
+<text  x="5436.74" y="399.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (90 samples, 1.09%)</title><rect x="4063.1" y="389" width="65.4" height="15.0" fill="rgb(241,158,14)" rx="2" ry="2" />
+<text  x="4066.08" y="399.5" >[[kerne..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (85 samples, 1.03%)</title><rect x="2691.7" y="37" width="61.8" height="15.0" fill="rgb(250,16,46)" rx="2" ry="2" />
+<text  x="2694.69" y="47.5" >[[kern..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (85 samples, 1.03%)</title><rect x="3954.0" y="453" width="61.8" height="15.0" fill="rgb(249,135,32)" rx="2" ry="2" />
+<text  x="3957.01" y="463.5" >[[kern..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (797 samples, 9.69%)</title><rect x="3293.0" y="181" width="579.6" height="15.0" fill="rgb(253,218,10)" rx="2" ry="2" />
+<text  x="3296.04" y="191.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (46 samples, 0.56%)</title><rect x="2251.0" y="85" width="33.5" height="15.0" fill="rgb(205,194,48)" rx="2" ry="2" />
+<text  x="2254.05" y="95.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (92 samples, 1.12%)</title><rect x="4061.6" y="437" width="66.9" height="15.0" fill="rgb(236,156,48)" rx="2" ry="2" />
+<text  x="4064.62" y="447.5" >[[kerne..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (19 samples, 0.23%)</title><rect x="2784.8" y="245" width="13.8" height="15.0" fill="rgb(226,48,8)" rx="2" ry="2" />
+<text  x="2787.77" y="255.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (94 samples, 1.14%)</title><rect x="2685.1" y="101" width="68.4" height="15.0" fill="rgb(237,95,46)" rx="2" ry="2" />
+<text  x="2688.15" y="111.5" >[[kerne..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (23 samples, 0.28%)</title><rect x="2376.8" y="117" width="16.8" height="15.0" fill="rgb(214,223,20)" rx="2" ry="2" />
+<text  x="2379.84" y="127.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (389 samples, 4.73%)</title><rect x="4237.6" y="373" width="282.8" height="15.0" fill="rgb(211,116,28)" rx="2" ry="2" />
+<text  x="4240.59" y="383.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (28 samples, 0.34%)</title><rect x="2646.6" y="165" width="20.4" height="15.0" fill="rgb(237,147,8)" rx="2" ry="2" />
+<text  x="2649.61" y="175.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::~unique_lock (30 samples, 0.36%)</title><rect x="2778.2" y="325" width="21.8" height="15.0" fill="rgb(212,157,1)" rx="2" ry="2" />
+<text  x="2781.22" y="335.5" >s..</text>
+</g>
+<g >
+<title>StrPair::~StrPair (43 samples, 0.52%)</title><rect x="2180.5" y="325" width="31.3" height="15.0" fill="rgb(234,14,19)" rx="2" ry="2" />
+<text  x="2183.51" y="335.5" >St..</text>
+</g>
+<g >
+<title>__dynamic_cast (70 samples, 0.85%)</title><rect x="2913.5" y="469" width="50.9" height="15.0" fill="rgb(244,181,47)" rx="2" ry="2" />
+<text  x="2916.47" y="479.5" >__dyn..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5219.2" y="469" width="10.2" height="15.0" fill="rgb(211,164,16)" rx="2" ry="2" />
+<text  x="5222.23" y="479.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (28 samples, 0.34%)</title><rect x="3890.7" y="421" width="20.4" height="15.0" fill="rgb(220,30,3)" rx="2" ry="2" />
+<text  x="3893.75" y="431.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (54 samples, 0.66%)</title><rect x="2245.2" y="277" width="39.3" height="15.0" fill="rgb(207,144,2)" rx="2" ry="2" />
+<text  x="2248.23" y="287.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (15 samples, 0.18%)</title><rect x="2284.5" y="229" width="10.9" height="15.0" fill="rgb(227,229,6)" rx="2" ry="2" />
+<text  x="2287.49" y="239.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_stringbuf&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::~basic_stringbuf (17 samples, 0.21%)</title><rect x="4522.6" y="485" width="12.4" height="15.0" fill="rgb(235,182,52)" rx="2" ry="2" />
+<text  x="4525.63" y="495.5" ></text>
+</g>
+<g >
+<title>std::thread::_M_start_thread (50 samples, 0.61%)</title><rect x="4015.8" y="437" width="36.4" height="15.0" fill="rgb(253,156,26)" rx="2" ry="2" />
+<text  x="4018.81" y="447.5" >std..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (32 samples, 0.39%)</title><rect x="3887.8" y="453" width="23.3" height="15.0" fill="rgb(218,97,11)" rx="2" ry="2" />
+<text  x="3890.84" y="463.5" >[..</text>
+</g>
+<g >
+<title>std::ios_base::~ios_base (18 samples, 0.22%)</title><rect x="20.2" y="485" width="13.1" height="15.0" fill="rgb(223,141,52)" rx="2" ry="2" />
+<text  x="23.18" y="495.5" ></text>
+</g>
+<g >
+<title>hackathon_slow (8,218 samples, 99.93%)</title><rect x="10.0" y="517" width="5975.6" height="15.0" fill="rgb(205,177,44)" rx="2" ry="2" />
+<text  x="13.00" y="527.5" >hackathon_slow</text>
+</g>
+<g >
+<title>std::has_facet&lt;std::ctype&lt;char&gt; &gt; (19 samples, 0.23%)</title><rect x="2998.5" y="469" width="13.9" height="15.0" fill="rgb(216,206,37)" rx="2" ry="2" />
+<text  x="3001.55" y="479.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (95 samples, 1.16%)</title><rect x="4059.4" y="453" width="69.1" height="15.0" fill="rgb(244,148,34)" rx="2" ry="2" />
+<text  x="4062.44" y="463.5" >[[kerne..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (94 samples, 1.14%)</title><rect x="2685.1" y="117" width="68.4" height="15.0" fill="rgb(212,13,25)" rx="2" ry="2" />
+<text  x="2688.15" y="127.5" >[[kerne..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::lock (58 samples, 0.71%)</title><rect x="2242.3" y="341" width="42.2" height="15.0" fill="rgb(213,99,13)" rx="2" ry="2" />
+<text  x="2245.32" y="351.5" >std..</text>
+</g>
+<g >
+<title>std::mutex::lock (58 samples, 0.71%)</title><rect x="2242.3" y="325" width="42.2" height="15.0" fill="rgb(230,175,47)" rx="2" ry="2" />
+<text  x="2245.32" y="335.5" >std..</text>
+</g>
+<g >
+<title>__GI___libc_open (1,058 samples, 12.86%)</title><rect x="3103.3" y="485" width="769.3" height="15.0" fill="rgb(237,175,6)" rx="2" ry="2" />
+<text  x="3106.25" y="495.5" >__GI___libc_open</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (209 samples, 2.54%)</title><rect x="39.8" y="485" width="152.0" height="15.0" fill="rgb(234,43,33)" rx="2" ry="2" />
+<text  x="42.81" y="495.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>xorChecksum (93 samples, 1.13%)</title><rect x="2296.1" y="357" width="67.7" height="15.0" fill="rgb(249,113,31)" rx="2" ry="2" />
+<text  x="2299.13" y="367.5" >xorChec..</text>
+</g>
+<g >
+<title>__lll_unlock_wake (26 samples, 0.32%)</title><rect x="2779.7" y="277" width="18.9" height="15.0" fill="rgb(219,57,19)" rx="2" ry="2" />
+<text  x="2782.68" y="287.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (100 samples, 1.22%)</title><rect x="2680.8" y="181" width="72.7" height="15.0" fill="rgb(240,99,23)" rx="2" ry="2" />
+<text  x="2683.79" y="191.5" >[[kernel..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (413 samples, 5.02%)</title><rect x="4220.1" y="469" width="300.3" height="15.0" fill="rgb(253,185,36)" rx="2" ry="2" />
+<text  x="4223.14" y="479.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[unknown] (16 samples, 0.19%)</title><rect x="4593.2" y="469" width="11.6" height="15.0" fill="rgb(225,58,8)" rx="2" ry="2" />
+<text  x="4596.16" y="479.5" ></text>
+</g>
+<g >
+<title>std::mutex::unlock (29 samples, 0.35%)</title><rect x="2778.9" y="293" width="21.1" height="15.0" fill="rgb(205,142,31)" rx="2" ry="2" />
+<text  x="2781.95" y="303.5" ></text>
+</g>
+<g >
+<title>Student::run (399 samples, 4.85%)</title><rect x="2608.8" y="389" width="290.1" height="15.0" fill="rgb(210,90,37)" rx="2" ry="2" />
+<text  x="2611.80" y="399.5" >Student::run</text>
+</g>
+<g >
+<title>__cxxabiv1::__vmi_class_type_info::__do_dyncast (33 samples, 0.40%)</title><rect x="3911.1" y="485" width="24.0" height="15.0" fill="rgb(227,148,6)" rx="2" ry="2" />
+<text  x="3914.11" y="495.5" >_..</text>
+</g>
+<g >
+<title>malloc (43 samples, 0.52%)</title><rect x="5325.4" y="501" width="31.3" height="15.0" fill="rgb(245,190,30)" rx="2" ry="2" />
+<text  x="5328.39" y="511.5" >ma..</text>
+</g>
+<g >
+<title>std::locale::~locale (48 samples, 0.58%)</title><rect x="155.4" y="469" width="34.9" height="15.0" fill="rgb(246,16,26)" rx="2" ry="2" />
+<text  x="158.43" y="479.5" >st..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_assign@plt (61 samples, 0.74%)</title><rect x="1376.3" y="309" width="44.4" height="15.0" fill="rgb(223,20,21)" rx="2" ry="2" />
+<text  x="1379.30" y="319.5" >std:..</text>
+</g>
+<g >
+<title>runHackathon (3,532 samples, 42.95%)</title><rect x="333.6" y="405" width="2568.2" height="15.0" fill="rgb(225,130,41)" rx="2" ry="2" />
+<text  x="336.58" y="415.5" >runHackathon</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="4139.4" y="357" width="10.2" height="15.0" fill="rgb(231,92,17)" rx="2" ry="2" />
+<text  x="4142.43" y="367.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (814 samples, 9.90%)</title><rect x="3280.7" y="213" width="591.9" height="15.0" fill="rgb(251,59,11)" rx="2" ry="2" />
+<text  x="3283.68" y="223.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (45 samples, 0.55%)</title><rect x="4832.4" y="469" width="32.7" height="15.0" fill="rgb(227,106,47)" rx="2" ry="2" />
+<text  x="4835.39" y="479.5" >[[..</text>
+</g>
+<g >
+<title>__cxxabiv1::__si_class_type_info::__do_dyncast (16 samples, 0.19%)</title><rect x="4593.2" y="453" width="11.6" height="15.0" fill="rgb(248,220,2)" rx="2" ry="2" />
+<text  x="4596.16" y="463.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (21 samples, 0.26%)</title><rect x="2802.9" y="149" width="15.3" height="15.0" fill="rgb(221,176,25)" rx="2" ry="2" />
+<text  x="2805.95" y="159.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (22 samples, 0.27%)</title><rect x="2377.6" y="85" width="16.0" height="15.0" fill="rgb(247,176,39)" rx="2" ry="2" />
+<text  x="2380.57" y="95.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (72 samples, 0.88%)</title><rect x="3963.5" y="405" width="52.3" height="15.0" fill="rgb(216,78,8)" rx="2" ry="2" />
+<text  x="3966.46" y="415.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (64 samples, 0.78%)</title><rect x="4082.0" y="277" width="46.5" height="15.0" fill="rgb(210,205,48)" rx="2" ry="2" />
+<text  x="4084.98" y="287.5" >[[ke..</text>
+</g>
+<g >
+<title>__gthread_recursive_mutex_lock (118 samples, 1.43%)</title><rect x="2669.2" y="277" width="85.8" height="15.0" fill="rgb(230,213,5)" rx="2" ry="2" />
+<text  x="2672.15" y="287.5" >__gthread_..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (36 samples, 0.44%)</title><rect x="3884.9" y="469" width="26.2" height="15.0" fill="rgb(242,17,51)" rx="2" ry="2" />
+<text  x="3887.93" y="479.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (16 samples, 0.19%)</title><rect x="2764.4" y="181" width="11.6" height="15.0" fill="rgb(206,146,12)" rx="2" ry="2" />
+<text  x="2767.41" y="191.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::unlock (16 samples, 0.19%)</title><rect x="2284.5" y="341" width="11.6" height="15.0" fill="rgb(251,162,54)" rx="2" ry="2" />
+<text  x="2287.49" y="351.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (43 samples, 0.52%)</title><rect x="5432.3" y="437" width="31.3" height="15.0" fill="rgb(250,158,1)" rx="2" ry="2" />
+<text  x="5435.28" y="447.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5410.5" y="485" width="10.1" height="15.0" fill="rgb(225,23,38)" rx="2" ry="2" />
+<text  x="5413.47" y="495.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (16 samples, 0.19%)</title><rect x="2764.4" y="165" width="11.6" height="15.0" fill="rgb(224,124,26)" rx="2" ry="2" />
+<text  x="2767.41" y="175.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (50 samples, 0.61%)</title><rect x="2248.1" y="165" width="36.4" height="15.0" fill="rgb(220,224,41)" rx="2" ry="2" />
+<text  x="2251.14" y="175.5" >[[k..</text>
+</g>
+<g >
+<title>readFileLine (58 samples, 0.71%)</title><rect x="2395.7" y="373" width="42.2" height="15.0" fill="rgb(211,217,25)" rx="2" ry="2" />
+<text  x="2398.75" y="383.5" >rea..</text>
+</g>
+<g >
+<title>std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;runHackathon (3,532 samples, 42.95%)</title><rect x="333.6" y="485" width="2568.2" height="15.0" fill="rgb(237,126,53)" rx="2" ry="2" />
+<text  x="336.58" y="495.5" >std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;runHackathon</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (47 samples, 0.57%)</title><rect x="5429.4" y="485" width="34.2" height="15.0" fill="rgb(230,84,10)" rx="2" ry="2" />
+<text  x="5432.38" y="495.5" >[[..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::unique_lock (28 samples, 0.34%)</title><rect x="2757.1" y="325" width="20.4" height="15.0" fill="rgb(241,22,50)" rx="2" ry="2" />
+<text  x="2760.14" y="335.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (50 samples, 0.61%)</title><rect x="2248.1" y="213" width="36.4" height="15.0" fill="rgb(230,132,28)" rx="2" ry="2" />
+<text  x="2251.14" y="223.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (50 samples, 0.61%)</title><rect x="4015.8" y="405" width="36.4" height="15.0" fill="rgb(239,71,18)" rx="2" ry="2" />
+<text  x="4018.81" y="415.5" >[[k..</text>
+</g>
+<g >
+<title>std::use_facet&lt;std::ctype&lt;char&gt; &gt; (17 samples, 0.21%)</title><rect x="4706.6" y="453" width="12.4" height="15.0" fill="rgb(228,161,8)" rx="2" ry="2" />
+<text  x="4709.60" y="463.5" ></text>
+</g>
+<g >
+<title>StrPair::~StrPair (148 samples, 1.80%)</title><rect x="1023.6" y="309" width="107.6" height="15.0" fill="rgb(243,153,13)" rx="2" ry="2" />
+<text  x="1026.63" y="319.5" >StrPair::~Str..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (21 samples, 0.26%)</title><rect x="2802.9" y="197" width="15.3" height="15.0" fill="rgb(226,11,6)" rx="2" ry="2" />
+<text  x="2805.95" y="207.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1,043 samples, 12.68%)</title><rect x="3114.2" y="437" width="758.4" height="15.0" fill="rgb(233,165,1)" rx="2" ry="2" />
+<text  x="3117.16" y="447.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>__gthread_recursive_mutex_unlock (44 samples, 0.54%)</title><rect x="2635.0" y="277" width="32.0" height="15.0" fill="rgb(205,128,28)" rx="2" ry="2" />
+<text  x="2637.98" y="287.5" >__..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1,057 samples, 12.85%)</title><rect x="3104.0" y="469" width="768.6" height="15.0" fill="rgb(210,210,36)" rx="2" ry="2" />
+<text  x="3106.98" y="479.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>std::use_facet&lt;std::ctype&lt;char&gt; &gt; (20 samples, 0.24%)</title><rect x="3062.5" y="469" width="14.6" height="15.0" fill="rgb(215,193,44)" rx="2" ry="2" />
+<text  x="3065.53" y="479.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (87 samples, 1.06%)</title><rect x="4065.3" y="373" width="63.2" height="15.0" fill="rgb(207,20,16)" rx="2" ry="2" />
+<text  x="4068.26" y="383.5" >[[kern..</text>
+</g>
+<g >
+<title>std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt;::_M_extract_int&lt;unsigned int&gt; (25 samples, 0.30%)</title><rect x="5966.0" y="501" width="18.2" height="15.0" fill="rgb(206,173,3)" rx="2" ry="2" />
+<text  x="5969.00" y="511.5" ></text>
+</g>
+<g >
+<title>_int_malloc (45 samples, 0.55%)</title><rect x="5241.0" y="501" width="32.8" height="15.0" fill="rgb(211,178,54)" rx="2" ry="2" />
+<text  x="5244.05" y="511.5" >_i..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (106 samples, 1.29%)</title><rect x="3938.7" y="469" width="77.1" height="15.0" fill="rgb(250,156,12)" rx="2" ry="2" />
+<text  x="3941.74" y="479.5" >[[kernel..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (22 samples, 0.27%)</title><rect x="2802.2" y="261" width="16.0" height="15.0" fill="rgb(207,227,29)" rx="2" ry="2" />
+<text  x="2805.22" y="271.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (75 samples, 0.91%)</title><rect x="3961.3" y="437" width="54.5" height="15.0" fill="rgb(211,147,45)" rx="2" ry="2" />
+<text  x="3964.28" y="447.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (43 samples, 0.52%)</title><rect x="4833.8" y="453" width="31.3" height="15.0" fill="rgb(238,89,47)" rx="2" ry="2" />
+<text  x="4836.85" y="463.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (55 samples, 0.67%)</title><rect x="3975.8" y="373" width="40.0" height="15.0" fill="rgb(209,35,36)" rx="2" ry="2" />
+<text  x="3978.82" y="383.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5219.2" y="421" width="10.2" height="15.0" fill="rgb(219,164,40)" rx="2" ry="2" />
+<text  x="5222.23" y="431.5" ></text>
+</g>
+<g >
+<title>std::_V2::condition_variable_any::_Unlock&lt;std::unique_lock&lt;std::recursive_mutex&gt; &gt;::~_Unlock (121 samples, 1.47%)</title><rect x="2667.0" y="325" width="88.0" height="15.0" fill="rgb(248,60,12)" rx="2" ry="2" />
+<text  x="2669.97" y="335.5" >std::_V2::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (54 samples, 0.66%)</title><rect x="3976.5" y="357" width="39.3" height="15.0" fill="rgb(245,57,34)" rx="2" ry="2" />
+<text  x="3979.55" y="367.5" >[[k..</text>
+</g>
+<g >
+<title>std::getline&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; (63 samples, 0.77%)</title><rect x="5907.8" y="501" width="45.8" height="15.0" fill="rgb(227,38,26)" rx="2" ry="2" />
+<text  x="5910.83" y="511.5" >std:..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::lock (121 samples, 1.47%)</title><rect x="2667.0" y="309" width="88.0" height="15.0" fill="rgb(235,188,16)" rx="2" ry="2" />
+<text  x="2669.97" y="319.5" >std::uniqu..</text>
+</g>
+<g >
+<title>Container&lt;StrPair&gt;::push (2,581 samples, 31.38%)</title><rect x="338.7" y="341" width="1876.7" height="15.0" fill="rgb(213,71,24)" rx="2" ry="2" />
+<text  x="341.67" y="351.5" >Container&lt;StrPair&gt;::push</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (24 samples, 0.29%)</title><rect x="2781.1" y="261" width="17.5" height="15.0" fill="rgb(215,184,29)" rx="2" ry="2" />
+<text  x="2784.13" y="271.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (85 samples, 1.03%)</title><rect x="4066.7" y="357" width="61.8" height="15.0" fill="rgb(227,139,36)" rx="2" ry="2" />
+<text  x="4069.71" y="367.5" >[[kern..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (48 samples, 0.58%)</title><rect x="4017.3" y="309" width="34.9" height="15.0" fill="rgb(212,135,53)" rx="2" ry="2" />
+<text  x="4020.27" y="319.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (18 samples, 0.22%)</title><rect x="5450.5" y="325" width="13.1" height="15.0" fill="rgb(250,216,54)" rx="2" ry="2" />
+<text  x="5453.46" y="335.5" ></text>
+</g>
+<g >
+<title>std::locale::~locale (16 samples, 0.19%)</title><rect x="2875.7" y="325" width="11.6" height="15.0" fill="rgb(254,96,25)" rx="2" ry="2" />
+<text  x="2878.66" y="335.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (43 samples, 0.52%)</title><rect x="5432.3" y="421" width="31.3" height="15.0" fill="rgb(246,181,42)" rx="2" ry="2" />
+<text  x="5435.28" y="431.5" >[[..</text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::basic_string@plt (57 samples, 0.69%)</title><rect x="1641.7" y="309" width="41.4" height="15.0" fill="rgb(232,23,23)" rx="2" ry="2" />
+<text  x="1644.70" y="319.5" >std..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (16 samples, 0.19%)</title><rect x="2764.4" y="197" width="11.6" height="15.0" fill="rgb(224,44,38)" rx="2" ry="2" />
+<text  x="2767.41" y="207.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (953 samples, 11.59%)</title><rect x="3179.6" y="293" width="693.0" height="15.0" fill="rgb(227,116,18)" rx="2" ry="2" />
+<text  x="3182.60" y="303.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>malloc (27 samples, 0.33%)</title><rect x="4174.3" y="485" width="19.7" height="15.0" fill="rgb(253,118,43)" rx="2" ry="2" />
+<text  x="4177.33" y="495.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::unique_lock (23 samples, 0.28%)</title><rect x="2801.5" y="357" width="16.7" height="15.0" fill="rgb(208,210,38)" rx="2" ry="2" />
+<text  x="2804.49" y="367.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (95 samples, 1.16%)</title><rect x="2684.4" y="133" width="69.1" height="15.0" fill="rgb(220,214,18)" rx="2" ry="2" />
+<text  x="2687.42" y="143.5" >[[kerne..</text>
+</g>
+<g >
+<title>[unknown] (18 samples, 0.22%)</title><rect x="20.2" y="469" width="13.1" height="15.0" fill="rgb(248,22,7)" rx="2" ry="2" />
+<text  x="23.18" y="479.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (46 samples, 0.56%)</title><rect x="4831.7" y="485" width="33.4" height="15.0" fill="rgb(227,88,22)" rx="2" ry="2" />
+<text  x="4834.67" y="495.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (21 samples, 0.26%)</title><rect x="2802.9" y="181" width="15.3" height="15.0" fill="rgb(249,37,1)" rx="2" ry="2" />
+<text  x="2805.95" y="191.5" ></text>
+</g>
+<g >
+<title>std::getline&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;@plt (14 samples, 0.17%)</title><rect x="2569.5" y="373" width="10.2" height="15.0" fill="rgb(226,102,12)" rx="2" ry="2" />
+<text  x="2572.53" y="383.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (29 samples, 0.35%)</title><rect x="4128.5" y="469" width="21.1" height="15.0" fill="rgb(247,42,3)" rx="2" ry="2" />
+<text  x="4131.52" y="479.5" ></text>
+</g>
+<g >
+<title>std::recursive_mutex::lock (26 samples, 0.32%)</title><rect x="2375.4" y="325" width="18.9" height="15.0" fill="rgb(231,78,24)" rx="2" ry="2" />
+<text  x="2378.39" y="335.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1,012 samples, 12.31%)</title><rect x="3136.7" y="357" width="735.9" height="15.0" fill="rgb(253,88,46)" rx="2" ry="2" />
+<text  x="3139.70" y="367.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (19 samples, 0.23%)</title><rect x="2804.4" y="117" width="13.8" height="15.0" fill="rgb(254,138,36)" rx="2" ry="2" />
+<text  x="2807.40" y="127.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (71 samples, 0.86%)</title><rect x="4076.9" y="309" width="51.6" height="15.0" fill="rgb(210,61,5)" rx="2" ry="2" />
+<text  x="4079.89" y="319.5" >[[ker..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (25 samples, 0.30%)</title><rect x="2375.4" y="197" width="18.2" height="15.0" fill="rgb(239,136,0)" rx="2" ry="2" />
+<text  x="2378.39" y="207.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (18 samples, 0.22%)</title><rect x="2805.1" y="69" width="13.1" height="15.0" fill="rgb(231,74,30)" rx="2" ry="2" />
+<text  x="2808.13" y="79.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="3874.7" y="453" width="10.2" height="15.0" fill="rgb(215,22,25)" rx="2" ry="2" />
+<text  x="3877.75" y="463.5" ></text>
+</g>
+<g >
+<title>__lll_lock_wait (23 samples, 0.28%)</title><rect x="2801.5" y="293" width="16.7" height="15.0" fill="rgb(248,148,51)" rx="2" ry="2" />
+<text  x="2804.49" y="303.5" ></text>
+</g>
+<g >
+<title>std::thread::_Invoker&lt;std::tuple&lt;runHackathon (3,532 samples, 42.95%)</title><rect x="333.6" y="453" width="2568.2" height="15.0" fill="rgb(235,49,25)" rx="2" ry="2" />
+<text  x="336.58" y="463.5" >std::thread::_Invoker&lt;std::tuple&lt;runHackathon</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (15 samples, 0.18%)</title><rect x="2787.7" y="213" width="10.9" height="15.0" fill="rgb(217,5,21)" rx="2" ry="2" />
+<text  x="2790.68" y="223.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (20 samples, 0.24%)</title><rect x="4135.1" y="389" width="14.5" height="15.0" fill="rgb(248,219,10)" rx="2" ry="2" />
+<text  x="4138.07" y="399.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (22 samples, 0.27%)</title><rect x="4133.6" y="405" width="16.0" height="15.0" fill="rgb(221,9,27)" rx="2" ry="2" />
+<text  x="4136.61" y="415.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (23 samples, 0.28%)</title><rect x="2376.8" y="101" width="16.8" height="15.0" fill="rgb(229,129,50)" rx="2" ry="2" />
+<text  x="2379.84" y="111.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (49 samples, 0.60%)</title><rect x="4016.5" y="373" width="35.7" height="15.0" fill="rgb(215,34,4)" rx="2" ry="2" />
+<text  x="4019.54" y="383.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (808 samples, 9.82%)</title><rect x="3285.0" y="197" width="587.6" height="15.0" fill="rgb(247,107,48)" rx="2" ry="2" />
+<text  x="3288.04" y="207.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (36 samples, 0.44%)</title><rect x="10.0" y="501" width="26.2" height="15.0" fill="rgb(254,187,51)" rx="2" ry="2" />
+<text  x="13.00" y="511.5" >[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (39 samples, 0.47%)</title><rect x="2638.6" y="229" width="28.4" height="15.0" fill="rgb(217,7,29)" rx="2" ry="2" />
+<text  x="2641.61" y="239.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (25 samples, 0.30%)</title><rect x="2375.4" y="229" width="18.2" height="15.0" fill="rgb(246,70,7)" rx="2" ry="2" />
+<text  x="2378.39" y="239.5" ></text>
+</g>
+<g >
+<title>EventQueue::enqueueEvent (41 samples, 0.50%)</title><rect x="2365.9" y="373" width="29.8" height="15.0" fill="rgb(235,64,46)" rx="2" ry="2" />
+<text  x="2368.93" y="383.5" >Ev..</text>
+</g>
+<g >
+<title>new_heap (14 samples, 0.17%)</title><rect x="5410.5" y="501" width="10.1" height="15.0" fill="rgb(249,37,8)" rx="2" ry="2" />
+<text  x="5413.47" y="511.5" ></text>
+</g>
+<g >
+<title>__clone (50 samples, 0.61%)</title><rect x="4015.8" y="421" width="36.4" height="15.0" fill="rgb(253,85,52)" rx="2" ry="2" />
+<text  x="4018.81" y="431.5" >__c..</text>
+</g>
+<g >
+<title>std::locale::~locale (30 samples, 0.36%)</title><rect x="2325.2" y="341" width="21.8" height="15.0" fill="rgb(241,93,34)" rx="2" ry="2" />
+<text  x="2328.21" y="351.5" >s..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (27 samples, 0.33%)</title><rect x="5443.9" y="341" width="19.7" height="15.0" fill="rgb(248,45,13)" rx="2" ry="2" />
+<text  x="5446.92" y="351.5" ></text>
+</g>
+<g >
+<title>std::recursive_mutex::lock (23 samples, 0.28%)</title><rect x="2801.5" y="325" width="16.7" height="15.0" fill="rgb(218,151,23)" rx="2" ry="2" />
+<text  x="2804.49" y="335.5" ></text>
+</g>
+<g >
+<title>malloc_consolidate (26 samples, 0.32%)</title><rect x="4194.0" y="485" width="18.9" height="15.0" fill="rgb(220,64,12)" rx="2" ry="2" />
+<text  x="4196.96" y="495.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (23 samples, 0.28%)</title><rect x="4132.9" y="453" width="16.7" height="15.0" fill="rgb(224,39,0)" rx="2" ry="2" />
+<text  x="4135.88" y="463.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_stringbuf&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::overflow (15 samples, 0.18%)</title><rect x="5885.3" y="501" width="10.9" height="15.0" fill="rgb(249,130,2)" rx="2" ry="2" />
+<text  x="5888.29" y="511.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (999 samples, 12.15%)</title><rect x="3146.2" y="341" width="726.4" height="15.0" fill="rgb(250,113,25)" rx="2" ry="2" />
+<text  x="3149.16" y="351.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5410.5" y="469" width="10.1" height="15.0" fill="rgb(230,122,23)" rx="2" ry="2" />
+<text  x="5413.47" y="479.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="2285.2" y="197" width="10.2" height="15.0" fill="rgb(222,194,40)" rx="2" ry="2" />
+<text  x="2288.22" y="207.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (43 samples, 0.52%)</title><rect x="4833.8" y="421" width="31.3" height="15.0" fill="rgb(234,225,22)" rx="2" ry="2" />
+<text  x="4836.85" y="431.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (100 samples, 1.22%)</title><rect x="2680.8" y="213" width="72.7" height="15.0" fill="rgb(249,120,34)" rx="2" ry="2" />
+<text  x="2683.79" y="223.5" >[[kernel..</text>
+</g>
+<g >
+<title>std::thread::_Invoker&lt;std::tuple&lt;runHackathon (3,532 samples, 42.95%)</title><rect x="333.6" y="469" width="2568.2" height="15.0" fill="rgb(213,81,45)" rx="2" ry="2" />
+<text  x="336.58" y="479.5" >std::thread::_Invoker&lt;std::tuple&lt;runHackathon</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (15 samples, 0.18%)</title><rect x="2284.5" y="261" width="10.9" height="15.0" fill="rgb(219,45,48)" rx="2" ry="2" />
+<text  x="2287.49" y="271.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (25 samples, 0.30%)</title><rect x="2375.4" y="181" width="18.2" height="15.0" fill="rgb(217,118,47)" rx="2" ry="2" />
+<text  x="2378.39" y="191.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (1,043 samples, 12.68%)</title><rect x="3114.2" y="421" width="758.4" height="15.0" fill="rgb(207,8,33)" rx="2" ry="2" />
+<text  x="3117.16" y="431.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="3874.7" y="389" width="10.2" height="15.0" fill="rgb(211,121,27)" rx="2" ry="2" />
+<text  x="3877.75" y="399.5" ></text>
+</g>
+<g >
+<title>crossProduct (2,591 samples, 31.51%)</title><rect x="338.7" y="357" width="1884.0" height="15.0" fill="rgb(216,198,28)" rx="2" ry="2" />
+<text  x="341.67" y="367.5" >crossProduct</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::recursive_mutex&gt;::lock (23 samples, 0.28%)</title><rect x="2801.5" y="341" width="16.7" height="15.0" fill="rgb(230,174,27)" rx="2" ry="2" />
+<text  x="2804.49" y="351.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5219.2" y="437" width="10.2" height="15.0" fill="rgb(208,196,4)" rx="2" ry="2" />
+<text  x="5222.23" y="447.5" ></text>
+</g>
+<g >
+<title>std::_V2::condition_variable_any::wait&lt;std::unique_lock&lt;std::recursive_mutex&gt; &gt; (234 samples, 2.85%)</title><rect x="2630.6" y="341" width="170.2" height="15.0" fill="rgb(219,121,5)" rx="2" ry="2" />
+<text  x="2633.61" y="351.5" >std::_V2::condition_va..</text>
+</g>
+<g >
+<title>Student::getPackagesChecksum[abi:cxx11] (87 samples, 1.06%)</title><rect x="2834.9" y="357" width="63.3" height="15.0" fill="rgb(236,169,0)" rx="2" ry="2" />
+<text  x="2837.94" y="367.5" >Studen..</text>
+</g>
+<g >
+<title>std::use_facet&lt;std::num_get&lt;char, std::istreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt; &gt; (18 samples, 0.22%)</title><rect x="3077.1" y="469" width="13.1" height="15.0" fill="rgb(242,136,51)" rx="2" ry="2" />
+<text  x="3080.08" y="479.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5410.5" y="421" width="10.1" height="15.0" fill="rgb(225,186,27)" rx="2" ry="2" />
+<text  x="5413.47" y="431.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (58 samples, 0.71%)</title><rect x="4086.3" y="261" width="42.2" height="15.0" fill="rgb(250,130,48)" rx="2" ry="2" />
+<text  x="4089.35" y="271.5" >[[k..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (44 samples, 0.54%)</title><rect x="5431.6" y="469" width="32.0" height="15.0" fill="rgb(221,229,53)" rx="2" ry="2" />
+<text  x="5434.56" y="479.5" >[[..</text>
+</g>
+<g >
+<title>std::getline&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt; (109 samples, 1.33%)</title><rect x="2490.3" y="373" width="79.2" height="15.0" fill="rgb(250,86,14)" rx="2" ry="2" />
+<text  x="2493.27" y="383.5" >std::getl..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (90 samples, 1.09%)</title><rect x="2688.1" y="85" width="65.4" height="15.0" fill="rgb(246,125,31)" rx="2" ry="2" />
+<text  x="2691.06" y="95.5" >[[kerne..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (41 samples, 0.50%)</title><rect x="4835.3" y="389" width="29.8" height="15.0" fill="rgb(228,139,22)" rx="2" ry="2" />
+<text  x="4838.30" y="399.5" >[[..</text>
+</g>
+<g >
+<title>memcpy@plt (68 samples, 0.83%)</title><rect x="5361.0" y="501" width="49.5" height="15.0" fill="rgb(208,101,15)" rx="2" ry="2" />
+<text  x="5364.02" y="511.5" >memc..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (22 samples, 0.27%)</title><rect x="2377.6" y="69" width="16.0" height="15.0" fill="rgb(248,105,43)" rx="2" ry="2" />
+<text  x="2380.57" y="79.5" ></text>
+</g>
+<g >
+<title>cfree@GLIBC_2.2.5 (17 samples, 0.21%)</title><rect x="1136.3" y="309" width="12.4" height="15.0" fill="rgb(249,22,33)" rx="2" ry="2" />
+<text  x="1139.34" y="319.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (47 samples, 0.57%)</title><rect x="2250.3" y="101" width="34.2" height="15.0" fill="rgb(221,129,8)" rx="2" ry="2" />
+<text  x="2253.32" y="111.5" >[[..</text>
+</g>
+<g >
+<title>std::locale::operator= (155 samples, 1.88%)</title><rect x="41.3" y="469" width="112.7" height="15.0" fill="rgb(226,36,49)" rx="2" ry="2" />
+<text  x="44.27" y="479.5" >std::locale::..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (35 samples, 0.43%)</title><rect x="3990.4" y="325" width="25.4" height="15.0" fill="rgb(217,55,45)" rx="2" ry="2" />
+<text  x="3993.36" y="335.5" >[..</text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.25] (164 samples, 1.99%)</title><rect x="191.8" y="485" width="119.2" height="15.0" fill="rgb(253,208,31)" rx="2" ry="2" />
+<text  x="194.79" y="495.5" >[libstdc++.so...</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (48 samples, 0.58%)</title><rect x="4017.3" y="341" width="34.9" height="15.0" fill="rgb(219,170,10)" rx="2" ry="2" />
+<text  x="4020.27" y="351.5" >[[..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (80 samples, 0.97%)</title><rect x="4070.4" y="325" width="58.1" height="15.0" fill="rgb(208,226,12)" rx="2" ry="2" />
+<text  x="4073.35" y="335.5" >[[kern..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (23 samples, 0.28%)</title><rect x="2801.5" y="277" width="16.7" height="15.0" fill="rgb(217,125,30)" rx="2" ry="2" />
+<text  x="2804.49" y="287.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (14 samples, 0.17%)</title><rect x="5219.2" y="341" width="10.2" height="15.0" fill="rgb(220,22,53)" rx="2" ry="2" />
+<text  x="5222.23" y="351.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (16 samples, 0.19%)</title><rect x="2764.4" y="149" width="11.6" height="15.0" fill="rgb(216,174,31)" rx="2" ry="2" />
+<text  x="2767.41" y="159.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (896 samples, 10.89%)</title><rect x="3221.1" y="261" width="651.5" height="15.0" fill="rgb(216,81,8)" rx="2" ry="2" />
+<text  x="3224.05" y="271.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (389 samples, 4.73%)</title><rect x="4237.6" y="389" width="282.8" height="15.0" fill="rgb(206,55,25)" rx="2" ry="2" />
+<text  x="4240.59" y="399.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>pthread_cond_broadcast@@GLIBC_2.3.2 (52 samples, 0.63%)</title><rect x="5425.7" y="501" width="37.9" height="15.0" fill="rgb(212,40,13)" rx="2" ry="2" />
+<text  x="5428.74" y="511.5" >pth..</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (25 samples, 0.30%)</title><rect x="2375.4" y="133" width="18.2" height="15.0" fill="rgb(235,18,22)" rx="2" ry="2" />
+<text  x="2378.39" y="143.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (925 samples, 11.25%)</title><rect x="3200.0" y="277" width="672.6" height="15.0" fill="rgb(233,113,32)" rx="2" ry="2" />
+<text  x="3202.96" y="287.5" >[[kernel.kallsyms]]</text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (48 samples, 0.58%)</title><rect x="4017.3" y="325" width="34.9" height="15.0" fill="rgb(228,219,3)" rx="2" ry="2" />
+<text  x="4020.27" y="335.5" >[[..</text>
+</g>
+<g >
+<title>__mmap (14 samples, 0.17%)</title><rect x="5219.2" y="501" width="10.2" height="15.0" fill="rgb(212,129,19)" rx="2" ry="2" />
+<text  x="5222.23" y="511.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (52 samples, 0.63%)</title><rect x="2246.7" y="245" width="37.8" height="15.0" fill="rgb(242,109,37)" rx="2" ry="2" />
+<text  x="2249.68" y="255.5" >[[k..</text>
+</g>
+</g>
+</svg>
